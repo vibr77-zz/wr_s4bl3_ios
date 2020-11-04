@@ -17,5 +17,7 @@ target 'S4BL3 IOS' do
   end
   
   pod 'Charts'
+  pod 'MSCircularSlider'
+  pod 'InAppSettingsKit'
 
 end

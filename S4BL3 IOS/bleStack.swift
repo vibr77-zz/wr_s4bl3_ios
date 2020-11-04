@@ -11,7 +11,9 @@ import CoreBluetooth
 // https://github.com/oesmith/gatt-xml/blob/master/org.bluetooth.characteristic.fitness_machine_control_point.xml
 // https://github.com/oesmith/gatt-xml/blob/master/org.bluetooth.characteristic.fitness_machine_feature.xml
 
-
+let heartRateServiceCBUUID =                CBUUID(string: "180D")
+let heartRateMeasurementCxCBUUID =          CBUUID(string: "2A37")
+let bodySensorLocationCxCBUUID =            CBUUID(string: "2A38")
 
 let fitnessServiceCBUUID =                  CBUUID(string: "0x1826")
 let fitnessMachineControlPointCBUUID =      CBUUID(string: "0x2AD9")        // CX Not implemented yet
@@ -23,11 +25,10 @@ let batteryServiceCBUUID =                  CBUUID(string:"0x180F")            /
 let batteryLevelCBUUID =                    CBUUID(string:"0x2A19")            // Additionnal cx to battery service
 
 struct rowerDataKpi{
-  var bpm=0; // Start of Part 1
   var strokeCount=0;
   var tmpstrokeRate=0;
   var strokeRate=0;
-  var averageStokeRate=0;
+  var averageStrokeRate=0;
   var totalDistance=0;
   var instantaneousPace=0;
   var tmpinstantaneousPace=0;
@@ -45,21 +46,55 @@ struct rowerDataKpi{
   var elapsedTimeMin=0;
   var elapsedTimeHour=0;
   var remainingTime=0;
+    
+    func valueByPropertyName(name:String) -> Int {
+        switch name {
+            case "strokeCount": return strokeCount
+            case "strokeRate": return strokeRate
+            case "averageStrokeRate": return averageStrokeRate
+            case "totalDistance": return totalDistance
+            case "instantaneousPace": return instantaneousPace
+            case "averagePace": return averagePace
+            case "instantaneousPower": return instantaneousPower
+            case "averagePower": return averagePower
+            case "resistanceLevel": return resistanceLevel
+            case "totalEnergy": return totalEnergy
+            case "energyPerHour": return energyPerHour
+            case "energyPerMinute": return energyPerMinute
+            case "heartRate": return heartRate
+            case "metabolicEquivalent": return metabolicEquivalent
+            case "elapsedTime": return elapsedTime
+            case "remainingTime": return remainingTime
+           
+            default: fatalError("Wrong property name")
+        }
+    }
+    
 };
 
 
 protocol bleStackDelegate {
-    func onUpdateBleData(bleData:rowerDataKpi)
+     func onBleDataNotification(bleData:rowerDataKpi)
+     func onBleConnectionDidChange(pType:Int,isConnected:Bool)
 }
 
 public class bleStack: NSObject {
-  public static let sharedInstance = bleStack()
+    public static let sharedInstance = bleStack() // used to declare the singleton
 
-  var centralManager: CBCentralManager!
-  var fitnessPeripheral: CBPeripheral!
-  var rdKpi:rowerDataKpi!
+    var centralManager: CBCentralManager!
+    var fitnessPeripheral: CBPeripheral!
+    var heartRatePeripheral: CBPeripheral!
+    
+    var isFitnessPeripheralConnected:Bool=false
+    var isFitnessPeripheralHasBatteryService:Bool=false
+    var isHeartRatePeripheralConnected:Bool=false
+    
+    
+    var pType=0; // Peripheral Type
+  
+    var rdKpi:rowerDataKpi!
    
-  var delegate: bleStackDelegate?
+    var delegate: bleStackDelegate?
     
     private override init() {
         super.init()
@@ -88,7 +123,9 @@ extension bleStack: CBCentralManagerDelegate {
              case .poweredOff:
                print("central.state is .poweredOff")
              case .poweredOn:
-                centralManager.scanForPeripherals(withServices: [fitnessServiceCBUUID])
+                pType=0; // Peripheral=0 start with fitness
+                centralManager.scanForPeripherals(withServices: [fitnessServiceCBUUID/*,heartRateServiceCBUUID*/])
+                
         @unknown default:
            print("fatal error")
         }
@@ -96,16 +133,53 @@ extension bleStack: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                           advertisementData: [String : Any], rssi RSSI: NSNumber) {
         print(peripheral)
+        if (pType==0){
+            //print("here 1")
+            fitnessPeripheral = peripheral
+            fitnessPeripheral.delegate = self
+            centralManager.stopScan()
+            centralManager.connect(fitnessPeripheral)
+            /* Let's connect the heartRate monitor if any */
+            pType=1
+            centralManager.scanForPeripherals(withServices: [heartRateServiceCBUUID])
+            
+        }else{
+            //print("here 2")
+            heartRatePeripheral=peripheral
+            heartRatePeripheral.delegate=self
+            centralManager.stopScan()
+            centralManager.connect(heartRatePeripheral)
+        }
         
-        fitnessPeripheral = peripheral
-        fitnessPeripheral.delegate = self
-        centralManager.stopScan()
-        centralManager.connect(fitnessPeripheral)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         print("Connected!")
-        fitnessPeripheral.discoverServices([fitnessServiceCBUUID,batteryServiceCBUUID])
+        
+        if (fitnessPeripheral==peripheral){
+            fitnessPeripheral.discoverServices([fitnessServiceCBUUID,batteryServiceCBUUID])
+            delegate?.onBleConnectionDidChange(pType:0,isConnected:true)
+            isFitnessPeripheralConnected = true
+        }else if (heartRatePeripheral==peripheral){
+            heartRatePeripheral.discoverServices([heartRateServiceCBUUID,batteryServiceCBUUID])
+            delegate?.onBleConnectionDidChange(pType:1,isConnected:true)
+            isHeartRatePeripheralConnected = true
+        }
+    }
+    
+    public func centralManager(_ central: CBCentralManager,didDisconnectPeripheral peripheral: CBPeripheral,error: Error?){
+        print("Disconnected")
+        
+        if (fitnessPeripheral==peripheral){
+            delegate?.onBleConnectionDidChange(pType:0,isConnected:false)
+            isHeartRatePeripheralConnected = false
+        }else if (heartRatePeripheral==peripheral){
+            delegate?.onBleConnectionDidChange(pType:1,isConnected:false)
+            isHeartRatePeripheralConnected = false
+        }
+        
+        // This is for automatic reconnection of Peripheral
+        centralManager.connect(peripheral)
     }
     
     func findCharacteristicByID(characteristicID: CBUUID) -> CBCharacteristic? {
@@ -121,13 +195,51 @@ extension bleStack: CBCentralManagerDelegate {
         return nil
     }
     
+    public func setBleResetCommand(){
+        var sData = NSData(bytes: [0x00] as [UInt8], length: 1);
+        sendFitnessControlPoint(sData: sData)
+        
+        sData = NSData(bytes: [0x01] as [UInt8], length: 1);
+        sendFitnessControlPoint(sData: sData)
+    }
     
-    public func sendFTMSCommand(){
-        if let characteristic = findCharacteristicByID(characteristicID: fitnessMachineControlPointCBUUID) {
-            let value = NSData(bytes: [0x0B as UInt8], length: 1)
-            fitnessPeripheral.writeValue(value as Data, for: characteristic, type: .withResponse)
-        }
+    public func setBleWorkout(workoutType:Int, workoutValue:Int) {
        
+        // workType=0 => Duration workout
+        // workType=1 => Distance workout
+        // workType=2 => Stroke   workout
+        
+        setBleResetCommand() // always start with a Reset for the S4
+        
+        let c1=(UInt8)(workoutValue &  0x000000FF)
+        let c2=(UInt8)((workoutValue & 0x0000FF00 ) >> 8)
+        let c3=(UInt8)((workoutValue & 0x00FF0000 ) >> 16) // use for distance
+        
+        var sData:NSData!
+        
+        if (workoutType == 0){
+            sData=NSData(bytes:[0x0D,c1,c2], length: 3)         //UINT16
+            sendFitnessControlPoint(sData: sData)
+        }
+        
+        if (workoutType == 2){
+            sData=NSData(bytes:[0x0C,c1,c2,c3], length: 4)      // UINT24
+            sendFitnessControlPoint(sData: sData)
+        }
+        
+        if (workoutType == 3){
+            sData=NSData(bytes:[0x0B,c1,c2], length: 3)         // UINT16
+            sendFitnessControlPoint(sData: sData)
+        }
+    }
+    
+    public func sendFitnessControlPoint(sData:NSData){
+        if let characteristic = findCharacteristicByID(characteristicID: fitnessMachineControlPointCBUUID) {
+            print ("SendControlPoint");
+            print (characteristic);
+            
+            fitnessPeripheral.writeValue(sData as Data, for: characteristic, type: .withResponse)
+        }
     }
 }
 
@@ -138,56 +250,59 @@ extension bleStack: CBPeripheralDelegate {
           print(service)
           peripheral.discoverCharacteristics(nil, for: service)
         }
-  }
+    }
 
+    public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard error == nil else {
+            print("Error discovering services: error")
+          return
+        }
+         print("Message sent")
+    }
+    
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let characteristics = service.characteristics else { return }
 
         for characteristic in characteristics {
           print(characteristic)
 
-          if characteristic.properties.contains(.read) {
-            print("\(characteristic.uuid): properties contains .read")
-            peripheral.readValue(for: characteristic)
-          }
-          if characteristic.properties.contains(.notify) {
-            print("\(characteristic.uuid): properties contains .notify")
-            peripheral.setNotifyValue(true, for: characteristic)
-          }
+            if (characteristic.uuid == batteryLevelCBUUID && peripheral == fitnessPeripheral){
+                isFitnessPeripheralHasBatteryService = true
+                delegate?.onBleConnectionDidChange(pType:0,isConnected:true)
+            }
+            
+            if characteristic.properties.contains(.read) {
+                print("\(characteristic.uuid): properties contains .read")
+                peripheral.readValue(for: characteristic)
+            }
+            if characteristic.properties.contains(.notify) {
+                print("\(characteristic.uuid): properties contains .notify")
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
         }
-  }
+    }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         switch characteristic.uuid {
-            case fitnessMachineRowerDataCBUUID:
+            
+            case fitnessMachineStatusCBUUID:
+                fitnessStatus(from: characteristic)
                 
+            case fitnessMachineRowerDataCBUUID:
                 rowerData(from: characteristic)
                 
             case batteryLevelCBUUID:
-                print()
-                //print(batteryLevel(from:characteristic))
-               
-            default:
+                //print()
+                print(batteryLevel(from:characteristic))
+                
+            case heartRateMeasurementCxCBUUID:
+                rdKpi.heartRate=heartRate(from: characteristic)
+                print("Heart rate:\(rdKpi.heartRate)")
+    
+        default:
                 print("Unhandled Characteristic UUID: \(characteristic.uuid)")
+        }
     }
-  }
-
-  private func bodyLocation(from characteristic: CBCharacteristic) -> String {
-    guard let characteristicData = characteristic.value,
-      let byte = characteristicData.first else { return "Error" }
-
-    switch byte {
-    case 0: return "Other"
-    case 1: return "Chest"
-    case 2: return "Wrist"
-    case 3: return "Finger"
-    case 4: return "Hand"
-    case 5: return "Ear Lobe"
-    case 6: return "Foot"
-    default:
-      return "Reserved for future use"
-    }
-  }
 
     private func batteryLevel(from characteristic:CBCharacteristic)->Int{
         guard let characteristicData = characteristic.value else { return -1 }
@@ -195,12 +310,10 @@ extension bleStack: CBPeripheralDelegate {
         return Int(byteArray[0]);
     }
     
-    public func rowerData(from characteristic:CBCharacteristic) {
+    private func rowerData(from characteristic:CBCharacteristic) {
         guard let characteristicData = characteristic.value else { return }
         let byteArray = [UInt8](characteristicData)
-       // #if DEBUG
-       // print("fuck")
-       // #endif
+
         do{
             try decodeRowerDataBitfield(byteArray:byteArray);
         }catch{
@@ -208,7 +321,12 @@ extension bleStack: CBPeripheralDelegate {
         }
     }
     
-    public func rowerDataStub() throws {
+    private func fitnessStatus(from characteristic:CBCharacteristic){
+        guard let characteristicData = characteristic.value else { return }
+        print ("fitnessStatus:" )
+    }
+    
+    private func rowerDataStub() throws {
         var byteArray=Array(repeating: UInt8(), count: 10);
         
         let rowerDataFlags=0b0000001111110;
@@ -227,7 +345,7 @@ extension bleStack: CBPeripheralDelegate {
         case invalidLength(lengthExpected:Int)
     }
     
-    public func decodeRowerDataBitfield(byteArray:[UInt8]) throws{
+    private func decodeRowerDataBitfield(byteArray:[UInt8]) throws{
         
         // 0000000000001 - 1   - 0x001 + More Data 0 <!> WARNINNG <!> This Bit is working the opposite way, 0 means field is present, 1 means not present
          // 0000000000010 - 2   - 0x002 + Average Stroke present
@@ -263,7 +381,7 @@ extension bleStack: CBPeripheralDelegate {
         
         let bitField=(UInt16)((Int(byteArray[1]) << 8) + Int(byteArray[0]))
         
-        print("Bitfield:"+String(bitField));
+        //print("Bitfield:"+String(bitField));
         
         var flg=0
         var pos=2; // After the 2 initial Bytes
@@ -298,9 +416,9 @@ extension bleStack: CBPeripheralDelegate {
                     //  C2  Average Stroke Rate     uint8     Position    5
                     len=1;
                     if (flg==1 && byteArray.count >= (pos+len)){
-                        rdKpi.averageStokeRate = Int(byteArray[pos])
+                        rdKpi.averageStrokeRate = Int(byteArray[pos])
                         #if DEBUG
-                            print("C\(i) pos=\(pos),rdKpi.averageStokeRate=" + String(rdKpi.averageStokeRate))
+                            print("C\(i) pos=\(pos),rdKpi.averageStrokeRate=" + String(rdKpi.averageStrokeRate))
                         #endif
                         pos+=1
                     }else if(byteArray.count<(pos+len)){
@@ -470,10 +588,8 @@ extension bleStack: CBPeripheralDelegate {
             }
         }
         
-        delegate?.onUpdateBleData(bleData:rdKpi)
-        // print((bitField &  0b000000000010) >> 1)
-        // let one=((bitField & 0x00FF) & 0b000000000010) >> 1;
-        //print(one);
+        delegate?.onBleDataNotification(bleData:rdKpi)
+
     }
     
   private func heartRate(from characteristic: CBCharacteristic) -> Int {
